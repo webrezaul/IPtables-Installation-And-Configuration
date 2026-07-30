@@ -21,7 +21,7 @@ SERVERS=(
     ["stapp03"]="banner BigGr33n"
 )
 
-# Load Balancer hostname (used to resolve IP dynamically)
+# Load Balancer hostname
 LBR_HOST="stlb01"
 
 # Apache port to protect
@@ -29,7 +29,6 @@ APACHE_PORT=6300
 
 # -------------------- Functions --------------------
 
-# Check if a command exists
 check_dependency() {
     if ! command -v "$1" &> /dev/null; then
         echo "[ERROR] '$1' is not installed. Installing..."
@@ -41,22 +40,17 @@ check_dependency() {
     fi
 }
 
+# Run a command on a remote host via SSH
+# IMPORTANT: No -t flag to avoid pseudo-terminal issues with file redirects
 run_remote() {
     local host="$1"
     local user="$2"
     local pass="$3"
     local cmd="$4"
 
-    # Use 'echo pass | sudo -S' because non-interactive SSH has no terminal for sudo prompt
-    # Using -t -t to force pseudo-terminal allocation for sudo
-    sshpass -p "${pass}" ssh -t -t -o StrictHostKeyChecking=no "${user}@${host}" \
-        "echo '${pass}' | sudo -S bash -c '${cmd}'" 2>/dev/null
-    local status=$?
-    if [ ${status} -ne 0 ]; then
-        echo "[ERROR] Command failed on ${host} (exit code: ${status})"
-        echo "        Command: ${cmd}"
-        return ${status}
-    fi
+    sshpass -p "${pass}" ssh -o StrictHostKeyChecking=no "${user}@${host}" \
+        "echo '${pass}' | sudo -S bash -c '${cmd}'" 2>&1
+    return $?
 }
 
 # -------------------- Pre-flight Checks --------------------
@@ -96,7 +90,6 @@ echo ""
 
 # -------------------- Main --------------------
 
-# Loop through each app server
 for host in stapp01 stapp02 stapp03; do
     read -r user pass <<< "${SERVERS[$host]}"
 
@@ -105,58 +98,79 @@ for host in stapp01 stapp02 stapp03; do
     echo "---------------------------------------------"
 
     # Step 1: Install iptables and iptables-services
-    echo "[1/5] Installing iptables and iptables-services..."
+    echo "[1/6] Installing iptables and iptables-services..."
     run_remote "${host}" "${user}" "${pass}" \
         "yum install -y iptables iptables-services"
     echo "      Done."
 
     # Step 2: Start and enable iptables service
-    echo "[2/5] Starting and enabling iptables service..."
+    echo "[2/6] Starting and enabling iptables service..."
     run_remote "${host}" "${user}" "${pass}" \
         "systemctl start iptables && systemctl enable iptables"
     echo "      Done."
 
-    # Step 3: Remove any existing rules for this port (prevents duplicates on re-run)
-    echo "[3/5] Cleaning up existing rules for port ${APACHE_PORT}..."
+    # Step 3: Remove any existing rules for this port (prevents duplicates)
+    echo "[3/6] Cleaning existing port ${APACHE_PORT} rules..."
     run_remote "${host}" "${user}" "${pass}" \
         "while iptables -D INPUT -p tcp --dport ${APACHE_PORT} -s ${LBR_IP} -j ACCEPT 2>/dev/null; do :; done; \
          while iptables -D INPUT -p tcp --dport ${APACHE_PORT} -j DROP 2>/dev/null; do :; done"
     echo "      Done."
 
-    # Step 4: Add iptables rules using INSERT (-I) not APPEND (-A)
-    #   -I INPUT 1 → ACCEPT port 6300 from LBR (inserted at position 1, top)
-    #   -I INPUT 2 → DROP   port 6300 from all  (inserted at position 2, after ACCEPT)
-    #
-    #   WHY -I instead of -A?
-    #   CentOS default iptables has a REJECT-all rule at the bottom.
-    #   Using -A (append) would place our rules AFTER that REJECT,
-    #   meaning they'd NEVER be reached. -I inserts at the top.
-    echo "[4/5] Adding iptables rules..."
+    # Step 4: Add iptables rules
+    echo "[4/6] Adding iptables rules..."
     run_remote "${host}" "${user}" "${pass}" \
         "iptables -I INPUT -p tcp --dport ${APACHE_PORT} -s ${LBR_IP} -j ACCEPT && \
          iptables -I INPUT 2 -p tcp --dport ${APACHE_PORT} -j DROP"
     echo "      Done."
 
-    # Step 5: Save rules to persist across reboots
-    echo "[5/5] Saving iptables rules for persistence..."
+    # Step 5: Save rules for persistence
+    echo "[5/6] Saving rules for persistence..."
     run_remote "${host}" "${user}" "${pass}" \
-        "iptables-save > /etc/sysconfig/iptables"
+        "iptables-save > /etc/sysconfig/iptables && chmod 600 /etc/sysconfig/iptables"
     echo "      Done."
 
-    # Verify: Show all INPUT rules to confirm correct ordering
-    echo ""
-    echo "[✓] Verifying rules on ${host}:"
+    # Step 6: Verify persistence by restarting iptables and checking rules survive
+    echo "[6/6] Verifying persistence (restart test)..."
     run_remote "${host}" "${user}" "${pass}" \
-        "iptables -L INPUT -n -v --line-numbers"
+        "systemctl restart iptables"
 
-    # Verify: Check saved rules file
-    echo "[✓] Checking saved rules:"
+    # Check rules after restart
+    echo ""
+    echo "[✓] Rules on ${host} AFTER restart:"
     run_remote "${host}" "${user}" "${pass}" \
-        "cat /etc/sysconfig/iptables | grep ${APACHE_PORT}"
+        "iptables -L INPUT -n --line-numbers | head -10"
+
+    # Check saved file
+    echo "[✓] Saved rules file:"
+    run_remote "${host}" "${user}" "${pass}" \
+        "grep ${APACHE_PORT} /etc/sysconfig/iptables"
+
+    # Check Apache is running
+    echo "[✓] Apache status:"
+    run_remote "${host}" "${user}" "${pass}" \
+        "systemctl status httpd 2>/dev/null | grep Active || echo 'httpd not found, checking port...'; ss -tlnp | grep ${APACHE_PORT}"
     echo ""
 
 done
 
+# -------------------- Final Connectivity Test --------------------
+
+echo "============================================="
+echo " 🔍 Testing LBR → App Server connectivity"
+echo "============================================="
+echo ""
+
+for host in stapp01 stapp02 stapp03; do
+    result=$(sshpass -p 'Mischi3f' ssh -o StrictHostKeyChecking=no loki@stlb01 \
+        "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 ${host}:${APACHE_PORT}" 2>/dev/null)
+    if [ "$result" = "200" ] || [ "$result" = "403" ]; then
+        echo "[✅] LBR → ${host}:${APACHE_PORT} = HTTP ${result} (REACHABLE)"
+    else
+        echo "[❌] LBR → ${host}:${APACHE_PORT} = HTTP ${result} (FAILED!)"
+    fi
+done
+
+echo ""
 echo "============================================="
 echo " ✅ All app servers configured successfully!"
 echo "============================================="
@@ -166,8 +180,3 @@ echo "  - iptables installed on: stapp01, stapp02, stapp03"
 echo "  - Port ${APACHE_PORT} ACCEPT from: ${LBR_IP} (${LBR_HOST})"
 echo "  - Port ${APACHE_PORT} DROP from: all others"
 echo "  - Rules saved and persistent across reboots"
-echo ""
-echo "Rule order (top → bottom):"
-echo "  1. ACCEPT tcp dpt:${APACHE_PORT} from ${LBR_IP}"
-echo "  2. DROP   tcp dpt:${APACHE_PORT} from anywhere"
-echo "  3. (default CentOS rules follow...)"
