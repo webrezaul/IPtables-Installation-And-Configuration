@@ -11,8 +11,6 @@
 # Run this script from the Jump Host (thor@jump_host)
 #=============================================================
 
-set -e  # Exit on any error
-
 # -------------------- Configuration --------------------
 
 # App server details
@@ -50,8 +48,9 @@ run_remote() {
     local cmd="$4"
 
     # Use 'echo pass | sudo -S' because non-interactive SSH has no terminal for sudo prompt
-    sshpass -p "${pass}" ssh -o StrictHostKeyChecking=no "${user}@${host}" \
-        "echo '${pass}' | sudo -S bash -c '${cmd}'"
+    # Using -t -t to force pseudo-terminal allocation for sudo
+    sshpass -p "${pass}" ssh -t -t -o StrictHostKeyChecking=no "${user}@${host}" \
+        "echo '${pass}' | sudo -S bash -c '${cmd}'" 2>/dev/null
     local status=$?
     if [ ${status} -ne 0 ]; then
         echo "[ERROR] Command failed on ${host} (exit code: ${status})"
@@ -101,18 +100,25 @@ for host in stapp01 stapp02 stapp03; do
     echo "---------------------------------------------"
 
     # Step 1: Install iptables and iptables-services
-    echo "[1/4] Installing iptables and iptables-services..."
+    echo "[1/5] Installing iptables and iptables-services..."
     run_remote "${host}" "${user}" "${pass}" \
         "yum install -y iptables iptables-services"
     echo "      Done."
 
     # Step 2: Start and enable iptables service
-    echo "[2/4] Starting and enabling iptables service..."
+    echo "[2/5] Starting and enabling iptables service..."
     run_remote "${host}" "${user}" "${pass}" \
         "systemctl start iptables && systemctl enable iptables"
     echo "      Done."
 
-    # Step 3: Add iptables rules using INSERT (-I) not APPEND (-A)
+    # Step 3: Remove any existing rules for this port (prevents duplicates on re-run)
+    echo "[3/5] Cleaning up existing rules for port ${APACHE_PORT}..."
+    run_remote "${host}" "${user}" "${pass}" \
+        "while iptables -D INPUT -p tcp --dport ${APACHE_PORT} -s ${LBR_IP} -j ACCEPT 2>/dev/null; do :; done; \
+         while iptables -D INPUT -p tcp --dport ${APACHE_PORT} -j DROP 2>/dev/null; do :; done"
+    echo "      Done."
+
+    # Step 4: Add iptables rules using INSERT (-I) not APPEND (-A)
     #   -I INPUT 1 → ACCEPT port 6300 from LBR (inserted at position 1, top)
     #   -I INPUT 2 → DROP   port 6300 from all  (inserted at position 2, after ACCEPT)
     #
@@ -120,14 +126,14 @@ for host in stapp01 stapp02 stapp03; do
     #   CentOS default iptables has a REJECT-all rule at the bottom.
     #   Using -A (append) would place our rules AFTER that REJECT,
     #   meaning they'd NEVER be reached. -I inserts at the top.
-    echo "[3/4] Adding iptables rules..."
+    echo "[4/5] Adding iptables rules..."
     run_remote "${host}" "${user}" "${pass}" \
         "iptables -I INPUT -p tcp --dport ${APACHE_PORT} -s ${LBR_IP} -j ACCEPT && \
          iptables -I INPUT 2 -p tcp --dport ${APACHE_PORT} -j DROP"
     echo "      Done."
 
-    # Step 4: Save rules to persist across reboots
-    echo "[4/4] Saving iptables rules for persistence..."
+    # Step 5: Save rules to persist across reboots
+    echo "[5/5] Saving iptables rules for persistence..."
     run_remote "${host}" "${user}" "${pass}" \
         "iptables-save > /etc/sysconfig/iptables"
     echo "      Done."
@@ -137,6 +143,11 @@ for host in stapp01 stapp02 stapp03; do
     echo "[✓] Verifying rules on ${host}:"
     run_remote "${host}" "${user}" "${pass}" \
         "iptables -L INPUT -n -v --line-numbers"
+
+    # Verify: Check saved rules file
+    echo "[✓] Checking saved rules:"
+    run_remote "${host}" "${user}" "${pass}" \
+        "cat /etc/sysconfig/iptables | grep ${APACHE_PORT}"
     echo ""
 
 done
