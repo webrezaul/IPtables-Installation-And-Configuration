@@ -84,14 +84,17 @@ git checkout -- . && git pull origin main && chmod +x ./iptables_setup.sh && ./i
 
 ## 📋 What the Script Does
 
-| Step | Action                                              | Command Used                                      |
-|------|-----------------------------------------------------|---------------------------------------------------|
-| 1    | Resolves LBR IP from `/etc/hosts`                   | `grep stlb01 /etc/hosts`                          |
-| 2    | Installs `iptables` & `iptables-services`           | `yum install -y iptables iptables-services`        |
-| 3    | Starts & enables iptables service                   | `systemctl start/enable iptables`                  |
-| 4    | **ACCEPT** port 6300 from LBR only (insert at top)  | `iptables -I INPUT -p tcp --dport 6300 -s <LBR_IP> -j ACCEPT` |
-| 5    | **DROP** port 6300 from everyone else                | `iptables -I INPUT 2 -p tcp --dport 6300 -j DROP`  |
-| 6    | Saves rules for reboot persistence                  | `service iptables save`                            |
+| Step | Action                                                  | Command Used                                      |
+|------|---------------------------------------------------------|---------------------------------------------------|
+| 0    | Resolves LBR IP from `/etc/hosts`                       | `grep stlb01 /etc/hosts`                          |
+| 1    | Installs `iptables` & `iptables-services`               | `yum install -y iptables iptables-services`        |
+| 2    | Starts & enables iptables service                       | `systemctl start/enable iptables`                  |
+| 3    | **Cleans up** existing port 6300 rules (prevents dupes) | `iptables -D INPUT ... (loop)`                    |
+| 4    | **ACCEPT** port 6300 from LBR only (insert at top)      | `iptables -I INPUT -p tcp --dport 6300 -s <LBR_IP> -j ACCEPT` |
+| 5    | **DROP** port 6300 from everyone else                   | `iptables -I INPUT 2 -p tcp --dport 6300 -j DROP`  |
+| 6    | Saves rules for reboot persistence                      | `iptables-save > /etc/sysconfig/iptables`          |
+
+> **Note:** The script is **idempotent** — safe to run multiple times without creating duplicate rules.
 
 ---
 
@@ -124,6 +127,14 @@ CentOS default iptables has a **REJECT-all** rule at the bottom. Using `-A` plac
 
 Flushing removes **all** rules including SSH access. This can **lock you out** of the server permanently.
 
+### Why clean up before adding rules?
+
+Running the script multiple times would **duplicate** ACCEPT/DROP rules. The cleanup step (Step 3) deletes any existing port 6300 rules first using a `while` loop with `iptables -D`, ensuring exactly **one** ACCEPT and **one** DROP rule exist.
+
+### Why `iptables-save` instead of `service iptables save`?
+
+RHEL 9 / CentOS Stream 9 does **not** have the `service` command. Using `iptables-save > /etc/sysconfig/iptables` writes the rules directly to the persistence file.
+
 ---
 
 ## 🧪 Verification
@@ -149,7 +160,14 @@ num   target     prot opt source               destination
 ### 2. Check Rules Persist After Reboot
 
 ```bash
-cat /etc/sysconfig/iptables
+cat /etc/sysconfig/iptables | grep 6300
+```
+
+**Expected output:**
+
+```
+-A INPUT -s <LBR_IP>/32 -p tcp -m tcp --dport 6300 -j ACCEPT
+-A INPUT -p tcp -m tcp --dport 6300 -j DROP
 ```
 
 ### 3. Test Connectivity
@@ -168,7 +186,8 @@ curl stapp01:6300
 
 | Version | Date       | Changes                              |
 |---------|------------|--------------------------------------|
-| `1.1.0` | 2026-07-30 | Fixed: `-I` instead of `-A`, removed flush, added error handling |
+| `1.2.0` | 2026-07-30 | Added duplicate rule cleanup, `iptables-save` for RHEL9, persistence verification |
+| `1.1.0` | 2026-07-30 | Fixed: `-I` instead of `-A`, removed flush, `sudo -S` for non-interactive SSH |
 | `1.0.0` | 2026-07-30 | Initial script with iptables setup   |
 
 ---
