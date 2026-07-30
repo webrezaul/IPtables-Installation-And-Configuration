@@ -49,7 +49,9 @@ run_remote() {
     local pass="$3"
     local cmd="$4"
 
-    sshpass -p "${pass}" ssh -o StrictHostKeyChecking=no "${user}@${host}" "${cmd}"
+    # Use 'echo pass | sudo -S' because non-interactive SSH has no terminal for sudo prompt
+    sshpass -p "${pass}" ssh -o StrictHostKeyChecking=no "${user}@${host}" \
+        "echo '${pass}' | sudo -S bash -c '${cmd}'"
     local status=$?
     if [ ${status} -ne 0 ]; then
         echo "[ERROR] Command failed on ${host} (exit code: ${status})"
@@ -101,13 +103,13 @@ for host in stapp01 stapp02 stapp03; do
     # Step 1: Install iptables and iptables-services
     echo "[1/4] Installing iptables and iptables-services..."
     run_remote "${host}" "${user}" "${pass}" \
-        "sudo yum install -y iptables iptables-services"
+        "yum install -y iptables iptables-services"
     echo "      Done."
 
     # Step 2: Start and enable iptables service
     echo "[2/4] Starting and enabling iptables service..."
     run_remote "${host}" "${user}" "${pass}" \
-        "sudo systemctl start iptables && sudo systemctl enable iptables"
+        "systemctl start iptables && systemctl enable iptables"
     echo "      Done."
 
     # Step 3: Add iptables rules using INSERT (-I) not APPEND (-A)
@@ -120,21 +122,21 @@ for host in stapp01 stapp02 stapp03; do
     #   meaning they'd NEVER be reached. -I inserts at the top.
     echo "[3/4] Adding iptables rules..."
     run_remote "${host}" "${user}" "${pass}" \
-        "sudo iptables -I INPUT -p tcp --dport ${APACHE_PORT} -s ${LBR_IP} -j ACCEPT && \
-         sudo iptables -I INPUT 2 -p tcp --dport ${APACHE_PORT} -j DROP"
+        "iptables -I INPUT -p tcp --dport ${APACHE_PORT} -s ${LBR_IP} -j ACCEPT && \
+         iptables -I INPUT 2 -p tcp --dport ${APACHE_PORT} -j DROP"
     echo "      Done."
 
     # Step 4: Save rules to persist across reboots
     echo "[4/4] Saving iptables rules for persistence..."
     run_remote "${host}" "${user}" "${pass}" \
-        "sudo service iptables save"
+        "service iptables save"
     echo "      Done."
 
     # Verify: Show all INPUT rules to confirm correct ordering
     echo ""
     echo "[✓] Verifying rules on ${host}:"
     run_remote "${host}" "${user}" "${pass}" \
-        "sudo iptables -L INPUT -n -v --line-numbers"
+        "iptables -L INPUT -n -v --line-numbers"
     echo ""
 
 done
