@@ -129,7 +129,7 @@ for host in stapp01 stapp02 stapp03; do
     # Step 4: Save rules to persist across reboots
     echo "[4/4] Saving iptables rules for persistence..."
     run_remote "${host}" "${user}" "${pass}" \
-        "/usr/sbin/service iptables save"
+        "iptables-save > /etc/sysconfig/iptables"
     echo "      Done."
 
     # Verify: Show all INPUT rules to confirm correct ordering
