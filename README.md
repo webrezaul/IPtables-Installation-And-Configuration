@@ -60,23 +60,24 @@ Before you begin, make sure you have the following:
 ssh thor@jump_host
 ```
 
-### 2. Upload or Create the Script
+### 2. Clone the Repository
 
 ```bash
-vi iptables_setup.sh
-# Paste the script contents, save and exit
+git clone https://github.com/webrezaul/IPtables-Installation-And-Configuration.git
+cd IPtables-Installation-And-Configuration
 ```
 
-### 3. Make it Executable
+### 3. Make it Executable & Run
 
 ```bash
 chmod +x iptables_setup.sh
+./iptables_setup.sh
 ```
 
-### 4. Run the Script
+### 4. Update & Re-run (if script was updated)
 
 ```bash
-bash iptables_setup.sh
+git checkout -- . && git pull origin main && chmod +x ./iptables_setup.sh && ./iptables_setup.sh
 ```
 
 ---
