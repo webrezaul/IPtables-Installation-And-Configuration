@@ -71,11 +71,16 @@ echo "[PRE] Checking dependencies..."
 check_dependency sshpass
 echo "      sshpass: OK"
 
-# Resolve LBR IP from /etc/hosts on jump host
+# Resolve LBR IP: try /etc/hosts first, then nslookup, then manual input
 LBR_IP=$(grep -i "${LBR_HOST}" /etc/hosts | awk '{print $1}' | head -1)
 
 if [ -z "${LBR_IP}" ]; then
-    echo "[WARN] Could not resolve LBR IP for '${LBR_HOST}' from /etc/hosts"
+    echo "[INFO] LBR not found in /etc/hosts, trying nslookup..."
+    LBR_IP=$(nslookup "${LBR_HOST}" 2>/dev/null | awk '/^Address:/ && !/#/ {print $2}' | head -1)
+fi
+
+if [ -z "${LBR_IP}" ]; then
+    echo "[WARN] Could not resolve LBR IP for '${LBR_HOST}' automatically"
     echo "       Please enter the LBR IP manually:"
     read -r LBR_IP
     if [ -z "${LBR_IP}" ]; then
