@@ -32,7 +32,13 @@ APACHE_PORT=6300
 check_dependency() {
     if ! command -v "$1" &> /dev/null; then
         echo "[ERROR] '$1' is not installed. Installing..."
-        sudo yum install -y "$1" > /dev/null 2>&1
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update -qq > /dev/null 2>&1 && sudo apt-get install -y "$1" > /dev/null 2>&1
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y "$1" > /dev/null 2>&1
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y "$1" > /dev/null 2>&1
+        fi
         if ! command -v "$1" &> /dev/null; then
             echo "[FATAL] Failed to install '$1'. Exiting."
             exit 1
